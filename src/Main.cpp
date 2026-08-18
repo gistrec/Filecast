@@ -25,6 +25,24 @@ static void cleanupAndExit(int code) {
 
 namespace {
 
+// Read an integer from an environment variable, falling back to `dflt` when the
+// variable is unset, empty, or not a whole number. Lets FILECAST_RATE / FILECAST_MTU
+// stand in for --rate / --mtu so a caller (the demo, tests, a deploy wrapper) can
+// set a default once in the environment instead of repeating the flag every time.
+// The value still goes through validateNumericFlags(), so a bad env is rejected the
+// same as a bad flag.
+int envInt(const char* name, int dflt) {
+    const char* v = std::getenv(name);
+    if (v == nullptr || *v == '\0') return dflt;
+    try {
+        std::string s(v);
+        size_t pos = 0;
+        int parsed = std::stoi(s, &pos);
+        if (pos == s.size()) return parsed;
+    } catch (...) {}
+    return dflt;
+}
+
 // Result of picking the subcommand off argv[1].
 enum class Command { Send, Receive, Handled };
 
@@ -169,14 +187,24 @@ bool collectDestination(const cxxopts::ParseResult& result, CliOptions& opt) {
         opt.mode = SendMode::Broadcast;
     }
 
-    // --iface pins the NIC used for multicast (send + join). It has no meaning
-    // for broadcast/unicast, so reject it there rather than silently ignore it.
+    // --iface pins the NIC used for multicast (send + join). FILECAST_IFACE is an
+    // ambient fallback (used by the demo/tests so the shown command can stay just
+    // `--multicast`); it applies only to multicast and is silently ignored for
+    // broadcast/unicast, whereas an explicit --iface there is a user error we
+    // still report. An explicit --iface always wins over the environment.
+    std::string iface_str;
     if (result.count("iface")) {
-        if (opt.mode != SendMode::Multicast) {
+        iface_str = result["iface"].as<std::string>();
+    } else if (opt.mode == SendMode::Multicast) {
+        const char* env = std::getenv("FILECAST_IFACE");
+        if (env != nullptr && *env != '\0') iface_str = env;
+    }
+    if (!iface_str.empty()) {
+        if (opt.mode != SendMode::Multicast) {  // only reachable via explicit --iface
             std::cerr << "Error: --iface only applies to --multicast" << std::endl;
             return false;
         }
-        opt.iface = result["iface"].as<std::string>();
+        opt.iface = iface_str;
         if (inet_pton(AF_INET, opt.iface.c_str(), &opt.iface_addr) != 1) {
             std::cerr << "Error: --iface must be a valid IPv4 address" << std::endl;
             return false;
@@ -189,11 +217,15 @@ bool collectDestination(const cxxopts::ParseResult& result, CliOptions& opt) {
 // Fill a CliOptions from the parsed result and validate it. Prints and returns
 // false on any problem.
 bool collectOptions(const cxxopts::ParseResult& result, bool is_sender, CliOptions& opt) {
-    opt.mtu       = result["mtu"].as<int>();
+    // CLI flag wins; otherwise fall back to FILECAST_MTU / FILECAST_RATE, then the
+    // compiled default. count() is 0 for an option left at its default (cxxopts'
+    // parse_default() doesn't bump it), so this only reads the env when the flag
+    // was truly absent.
+    opt.mtu       = result.count("mtu")  ? result["mtu"].as<int>()  : envInt("FILECAST_MTU", 1500);
     opt.ttl       = result["ttl"].as<int>();
     opt.port      = result["port"].as<int>();
     opt.bind_port = result["bind-port"].as<int>();
-    opt.rate      = result["rate"].as<int>();
+    opt.rate      = result.count("rate") ? result["rate"].as<int>() : envInt("FILECAST_RATE", 100);
 
     if (!validateNumericFlags(opt)) return false;
 
@@ -316,6 +348,18 @@ int setupSocket(const CliOptions& opt) {
         std::cerr << "Warning: Failed to set SO_REUSEPORT" << std::endl;
     }
     #endif
+
+    // Grow the socket buffers so a bulk transfer survives scheduling gaps. At line
+    // rate the ~768 KB default receive buffer (macOS net.inet.udp.recvspace) fills
+    // in a few milliseconds; once it overflows the kernel drops datagrams the
+    // receiver must then re-request, which stalls the transfer and drags its
+    // reported rate far below the sender's. Best-effort: the kernel silently clamps
+    // to kern.ipc.maxsockbuf, and we carry on with whatever it grants.
+    int sockbuf = 8 * 1024 * 1024;  // 8 MiB
+    setsockopt(_socket, SOL_SOCKET, SO_RCVBUF,
+               reinterpret_cast<const char*>(&sockbuf), sizeof(sockbuf));
+    setsockopt(_socket, SOL_SOCKET, SO_SNDBUF,
+               reinterpret_cast<const char*>(&sockbuf), sizeof(sockbuf));
 
     client_address.sin_family = AF_INET;
     client_address.sin_port = htons(static_cast<uint16_t>(opt.bind_port));
