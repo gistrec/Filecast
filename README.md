@@ -17,11 +17,13 @@ One sender, any number of receivers, no internet required.
         <img src="https://img.shields.io/github/license/gistrec/filecast?color=brightgreen" alt="License"></a>
 </p>
 
-<img src="docs/demo.gif" alt="One filecast sender delivering a file to three receivers simultaneously" width="1000">
+<img src="docs/demo.gif" alt="One filecast sender delivering a file to two receivers simultaneously at ~100 MiB/s" width="1000">
 
-<sub>One transfer, three receivers. Recorded on a single machine over the
-loopback interface (hence <code>--multicast</code>/<code>--iface</code>; on a
-real LAN receivers just run <code>filecast receive</code>) —
+<sub>One transfer, two receivers, at line rate. Recorded on a single machine over
+the loopback interface — the NIC, send rate and MTU come from
+<code>FILECAST_IFACE</code>/<code>FILECAST_RATE</code>/<code>FILECAST_MTU</code>
+(see below) so the commands stay just <code>--multicast</code>; on a real LAN
+receivers just run <code>filecast receive</code> —
 <a href="docs/demo.tape">demo.tape</a>.</sub>
 
 </div>
@@ -76,6 +78,12 @@ filecast send photo.jpg --to 192.168.1.50
 ```sh
 brew tap gistrec/filecast
 brew install filecast
+```
+
+**winget** (Windows):
+
+```powershell
+winget install gistrec.filecast
 ```
 
 **One-liner** (Linux, macOS):
@@ -159,6 +167,21 @@ filecast receive [file] [options]    # receive a file (default: name from sender
 | `--delay-ms`  | —          | ≥ 0 | Advanced: fixed inter-packet pause in ms; overrides `--rate` (`0` blasts at full speed, used by tests) |
 | `-h, --help`  | —          | — | Print help |
 | `--version`   | —          | — | Print version |
+
+### Environment variables
+
+`--iface`, `--rate` and `--mtu` each fall back to an environment variable when the
+flag is omitted, so you can set a default once instead of repeating it on every
+command. An explicit flag always wins.
+
+| Variable | Stands in for | Notes |
+| -------- | ------------- | ----- |
+| `FILECAST_IFACE` | `--iface` | Applied only in `--multicast` mode; ignored for broadcast/unicast |
+| `FILECAST_RATE`  | `--rate`  | Target send rate in Mbit/s |
+| `FILECAST_MTU`   | `--mtu`   | Max packet size in bytes |
+
+The demo above uses these to pin the loopback NIC and push line rate while the
+shown commands stay just `--multicast`.
 
 ## Examples
 
