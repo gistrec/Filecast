@@ -637,8 +637,10 @@ int onRecoveryTimeout(size_t missing) {
 }
 
 // Verify the reassembled file against the announced digest and write it out.
+// transfer_secs is the wall-clock time to receive the bytes (measured by the
+// caller before this fsync + full-file hash), used only for the reported rate.
 // Returns a process exit code.
-int verifyAndWrite() {
+int verifyAndWrite(double transfer_secs) {
     reporter.finish();
 
     // Flush to stable storage before trusting the bytes: the checksum below is
@@ -684,7 +686,7 @@ int verifyAndWrite() {
     }
     discardSnapshot();  // transfer complete — the .part snapshot is no longer needed
 
-    double secs = reporter.elapsed();
+    double secs = transfer_secs;
     double rate = secs > 0 ? file_length / secs : 0;
     std::cout << "Received " << fileName << " (" << Progress::humanBytes(file_length) << ")";
     if (secs > 0) {
@@ -781,7 +783,12 @@ int checkParts() {
 
     if (parts.size() < total) return onRecoveryTimeout(total - parts.size());
 
-    return verifyAndWrite();
+    // Stop the transfer clock here: the bytes are all in, and verifyAndWrite()'s
+    // fsync + full-file sha256 is local verification, not network transfer. Timing
+    // through it would report a rate well below the true throughput (and below the
+    // sender's) on fast links where hashing rivals the transfer time itself.
+    double transfer_secs = reporter.elapsed();
+    return verifyAndWrite(transfer_secs);
 }
 
 // Grow the receive buffer so it can hold a full chunk for this transfer.
