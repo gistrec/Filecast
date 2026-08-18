@@ -146,3 +146,21 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # Publish the Windows build to the Windows Package Manager (winget) by opening
+  # a manifest PR against microsoft/winget-pkgs. Skips prereleases (tags with a
+  # '-'). Requires a WINGET_TOKEN repo secret: a classic PAT with public_repo
+  # scope on an account that has forked microsoft/winget-pkgs. Only the Windows
+  # binary is a winget (portable) installer, so the regex matches just that
+  # asset. The package version is the tag with its leading 'v' stripped.
+  winget:
+    needs: release
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit manifest to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: gistrec.filecast
+          installers-regex: 'windows-x86_64\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
