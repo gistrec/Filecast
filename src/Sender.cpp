@@ -52,10 +52,8 @@ std::string baseName(const std::string& path) {
 std::map<size_t, int64_t> sent_part;
 std::ifstream input_file;
 
-// The ANNOUNCE datagram, kept verbatim after sendAnnounce() builds it so later
-// re-broadcasts are byte-identical: the receiver accepts a repeated same-session
-// ANNOUNCE only when it matches the latched one exactly (anything else is
-// treated as a hijack attempt and dropped).
+// ANNOUNCE datagram, kept verbatim: the receiver accepts a repeat only when it
+// is byte-identical to the latched one.
 std::vector<char> announce_packet;
 
 bool readFileAt(size_t offset, char* out, size_t len) {
@@ -190,8 +188,6 @@ bool sendAnnounce() {
     if (max_name > Protocol::MAX_NAME_LEN) max_name = Protocol::MAX_NAME_LEN;
     if (name.size() > max_name) name.resize(max_name);
 
-    // Built in its own buffer (not the shared `buffer`, which every sendPart
-    // overwrites) so the transfer can re-broadcast it unchanged later on.
     announce_packet.assign(Protocol::ANNOUNCE_FIXED + name.size(), 0);
     char* pkt = announce_packet.data();
     Protocol::writeHeader(pkt, Protocol::Type::Announce, session_id);
@@ -227,12 +223,8 @@ bool sendAnnounce() {
     return true;
 }
 
-// Best-effort re-broadcast of the stored ANNOUNCE. The initial burst leaves as
-// a sub-millisecond microburst, so a single loss window (cold NAT path, one
-// congested moment) used to strand every receiver: with no session latched it
-// silently discards all DATA and times out. Repeating the ANNOUNCE lets such a
-// receiver latch late and pull whatever it missed through the ordinary RESEND
-// path; a receiver already latched just refreshes its deadline.
+// Best-effort ANNOUNCE re-broadcast: lets a receiver that lost the initial
+// burst latch late and recover the missed parts via RESEND.
 void resendAnnounce() {
     if (announce_packet.empty()) return;
     if (sendto(_socket, announce_packet.data(), static_cast<int>(announce_packet.size()), 0,
@@ -281,10 +273,6 @@ bool serveResends(size_t total_parts, size_t& resent) {
         // empty packets can't drain the resend phase early.
         if (result < 0) {
             ttl--;
-            // Keep repeating the ANNOUNCE alongside FINISH for as long as the
-            // sender lingers: a receiver that lost every earlier copy (or was
-            // started late) can still latch here and pull the whole file
-            // through RESENDs.
             resendAnnounce();
             sendFinish();
             continue;
@@ -406,10 +394,8 @@ int run() {
     size_t delivered_parts = 0;
     int send_errno = 0;
 
-    // Repeat the ANNOUNCE a few times across the first second of DATA, so one
-    // lost initial burst no longer strands every receiver for the whole stream.
-    // A receiver that latches from a repeat recovers the parts it already
-    // missed via RESEND after FINISH.
+    // Repeat the ANNOUNCE across the first second of DATA, so one lost initial
+    // burst no longer strands every receiver.
     constexpr std::chrono::milliseconds announce_repeat_at[] = {200ms, 500ms, 1000ms};
     constexpr size_t announce_repeats = sizeof(announce_repeat_at) / sizeof(announce_repeat_at[0]);
     size_t announces_repeated = 0;
@@ -452,9 +438,7 @@ int run() {
               << ") in " << Progress::humanDuration(secs)
               << " at " << Progress::humanRate(rate) << std::endl;
 
-    // One more ANNOUNCE right before FINISH: a short transfer can drain inside
-    // the repeat window above, leaving a stranded receiver nothing to latch
-    // until the resend phase starts re-broadcasting below.
+    // A short transfer can drain before the repeats above fire.
     resendAnnounce();
     sendFinish();
 

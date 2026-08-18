@@ -86,10 +86,8 @@ void warnVersionOnce(uint8_t seen) {
               << static_cast<int>(Protocol::VERSION) << ")" << std::endl;
 }
 
-// DATA is arriving but no ANNOUNCE has been latched: without this line a lost
-// ANNOUNCE burst is indistinguishable from no sender at all — the receiver sits
-// at "Waiting for a sender..." while silently discarding every packet. Once per
-// run; the sender repeats its ANNOUNCE, so latching late is the expected rescue.
+// Once per run: without it a lost ANNOUNCE burst looks exactly like no sender
+// at all while every DATA packet is silently discarded.
 void warnUnannouncedDataOnce() {
     static bool warned = false;
     if (warned) return;

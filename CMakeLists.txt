@@ -189,11 +189,9 @@ if(BUILD_TESTING)
                 TIMEOUT 120
             )
 
-            # Lost-ANNOUNCE variant (issue #42): a Python UDP proxy swallows the
-            # sender's whole initial ANNOUNCE burst while letting every DATA
-            # packet through. The receiver must warn about un-announced DATA,
-            # latch from a later re-broadcast, and recover the missed parts via
-            # RESEND — pinning the announce-repeat hardening. Needs Python 3.
+            # Lost-ANNOUNCE variant: a Python UDP proxy swallows the sender's
+            # initial ANNOUNCE burst; the receiver must latch from a later
+            # re-broadcast and recover via RESEND. Needs Python 3.
             add_test(
                 NAME e2e_lostannounce
                 COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e_lostannounce.sh

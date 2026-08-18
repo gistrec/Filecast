@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 #
-# One-directional UDP proxy for the lost-ANNOUNCE test (tests/e2e_lostannounce.sh).
-# Listens on IN and forwards every datagram to OUT, except it drops the first
-# <count> ANNOUNCE (type=1) packets. This models the cold-path failure from
-# issue #42: the sender's initial ANNOUNCE burst is lost while every DATA packet
-# still arrives, so the receiver can only latch from a later re-broadcast and
-# must then recover the parts it missed through RESENDs.
+# One-directional UDP proxy for tests/e2e_lostannounce.sh: forwards everything
+# except the first <count> ANNOUNCE (type=1) packets, modeling a lost initial
+# ANNOUNCE burst while every DATA packet still arrives.
 #
 #   announce_drop_proxy.py <in_port> <out_host> <out_port> <count>
-#
-# The receiver's RESENDs go straight to the sender (not through this proxy), so
-# recovery traffic is unaffected.
 
 import socket
 import sys

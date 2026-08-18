@@ -1,20 +1,9 @@
 #!/usr/bin/env bash
 #
-# Lost-ANNOUNCE end-to-end test (issue #42). The sender's initial ANNOUNCE burst
-# leaves as a sub-millisecond microburst; if that one window is lost (cold NAT
-# path, momentary congestion), the receiver used to sit silently at "Waiting for
-# a sender..." discarding every DATA packet until ttl ran out — a whole failed
-# transfer with no diagnostic. The hardened sender repeats the ANNOUNCE during
-# the DATA stream, right before FINISH, and throughout the resend phase, and the
-# receiver reports un-announced DATA instead of staying silent.
-#
-# A one-directional proxy drops the first 4 ANNOUNCEs on the sender->receiver
-# path (the 3-packet burst plus the pre-FINISH repeat) while letting all DATA
-# through. The receiver must:
-#   * warn that data is arriving without an announcement (the new diagnostic),
-#   * latch from a later re-broadcast,
-#   * recover every missed part via RESEND,
-#   * and finish with a verified, bit-identical file.
+# Lost-ANNOUNCE end-to-end test: a proxy drops the sender's initial ANNOUNCE
+# burst (plus the pre-FINISH repeat) while letting all DATA through. The
+# receiver must warn about un-announced DATA, latch from a later re-broadcast,
+# recover every missed part via RESEND, and finish verified.
 #
 # Run via:
 #   ctest --test-dir build --output-on-failure
@@ -57,9 +46,8 @@ RECV_BIND=33901
 SEND_BIND=33902
 PROXY_IN=33903
 
-# The sender emits 3 burst ANNOUNCEs and (for a transfer that drains inside the
-# 200 ms repeat window) one more right before FINISH; drop all 4 so the receiver
-# can only latch from a resend-phase re-broadcast, with zero parts in hand.
+# 3 burst ANNOUNCEs + the pre-FINISH repeat: drop all 4 so the receiver can
+# only latch from a resend-phase re-broadcast.
 DROP_COUNT=4
 
 src="$WORKDIR/src.bin"
@@ -120,22 +108,17 @@ if ! grep -q "sha256 verified" "$recv_log"; then
     exit 1
 fi
 
-# Proof the scenario was actually exercised, not just missed by timing:
-# the proxy must have swallowed the whole initial burst...
+# Proof the scenario was exercised, not just missed by timing.
 if ! grep -q "dropped ANNOUNCE $DROP_COUNT/$DROP_COUNT" "$proxy_log"; then
     echo "FAIL: proxy did not drop $DROP_COUNT ANNOUNCEs (scenario not exercised)"
     tail -20 "$proxy_log"
     exit 1
 fi
-# ...the receiver must have seen un-announced DATA and said so (the new
-# diagnostic instead of a silent 'Waiting for a sender')...
 if ! grep -q "receiving data without an announcement" "$recv_log"; then
     echo "FAIL: receiver never warned about DATA arriving without an ANNOUNCE"
     tail -20 "$recv_log"
     exit 1
 fi
-# ...and it can only have completed by latching late and pulling the missed
-# parts through RESENDs.
 resend_count=$(grep -c "Request part of file with index" "$recv_log" || true)
 if [ "$resend_count" -eq 0 ]; then
     echo "FAIL: file matched but the RESEND recovery path was never exercised"
