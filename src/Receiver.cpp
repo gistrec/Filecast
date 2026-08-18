@@ -86,6 +86,16 @@ void warnVersionOnce(uint8_t seen) {
               << static_cast<int>(Protocol::VERSION) << ")" << std::endl;
 }
 
+// Once per run: without it a lost ANNOUNCE burst looks exactly like no sender
+// at all while every DATA packet is silently discarded.
+void warnUnannouncedDataOnce() {
+    static bool warned = false;
+    if (warned) return;
+    warned = true;
+    std::cerr << "Warning: receiving data without an announcement (was it lost?); "
+                 "waiting for the sender to repeat it" << std::endl;
+}
+
 // SHA-256 of the whole file, announced by the sender and checked after reassembly.
 uint8_t expected_hash[32] = {0};
 
@@ -923,6 +933,7 @@ int dispatchPacket(char*& buf, size_t& bufcap, int64_t length, bool& finish) {
             break;
         }
         case Protocol::Type::Transfer:
+            if (!have_session) warnUnannouncedDataOnce();
             if (storage_ready && handleTransfer(buf, length)) refreshDeadline();
             if (storage_failed) return 2;
             break;
