@@ -34,7 +34,12 @@ these 10 bytes.
 ## Transfer sequence
 
 1. The sender broadcasts an `ANNOUNCE` carrying a random session id, the total
-   file size, the chunk size, the file's SHA-256, and its name.
+   file size, the chunk size, the file's SHA-256, and its name. There is no
+   `RESEND` for the announcement, so the sender repeats it byte-identically — a
+   small initial burst, a few times across the first second of `TRANSFER`
+   traffic, and alongside every periodic `FINISH` re-broadcast — so a receiver
+   that lost the initial copies can still latch late and recover the parts it
+   missed through the ordinary `RESEND` path.
 2. Each receiver latches that session, creates an on-disk `.part` file, and
    clears its part registry. The chunk size is taken from the announcement, so
    sender and receivers never disagree about part boundaries even with

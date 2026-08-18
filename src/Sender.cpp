@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <map>
 #include <random>
+#include <vector>
 #include <cerrno>
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
@@ -50,6 +51,12 @@ std::string baseName(const std::string& path) {
 // preallocates 67M entries (~3 GB) up front.
 std::map<size_t, int64_t> sent_part;
 std::ifstream input_file;
+
+// The ANNOUNCE datagram, kept verbatim after sendAnnounce() builds it so later
+// re-broadcasts are byte-identical: the receiver accepts a repeated same-session
+// ANNOUNCE only when it matches the latched one exactly (anything else is
+// treated as a hijack attempt and dropped).
+std::vector<char> announce_packet;
 
 bool readFileAt(size_t offset, char* out, size_t len) {
     input_file.clear();
@@ -183,18 +190,22 @@ bool sendAnnounce() {
     if (max_name > Protocol::MAX_NAME_LEN) max_name = Protocol::MAX_NAME_LEN;
     if (name.size() > max_name) name.resize(max_name);
 
-    Protocol::writeHeader(buffer, Protocol::Type::Announce, session_id);
-    Protocol::putU32(buffer + Protocol::HEADER_SIZE,     static_cast<uint32_t>(file_length));
-    Protocol::putU32(buffer + Protocol::HEADER_SIZE + 4, static_cast<uint32_t>(mtu));
-    memcpy(buffer + Protocol::HEADER_SIZE + 8, file_hash, 32);
-    Protocol::putU16(buffer + Protocol::HEADER_SIZE + 40, static_cast<uint16_t>(name.size()));
-    memcpy(buffer + Protocol::ANNOUNCE_FIXED, name.data(), name.size());
-    int announce_len = static_cast<int>(Protocol::ANNOUNCE_FIXED + name.size());
+    // Built in its own buffer (not the shared `buffer`, which every sendPart
+    // overwrites) so the transfer can re-broadcast it unchanged later on.
+    announce_packet.assign(Protocol::ANNOUNCE_FIXED + name.size(), 0);
+    char* pkt = announce_packet.data();
+    Protocol::writeHeader(pkt, Protocol::Type::Announce, session_id);
+    Protocol::putU32(pkt + Protocol::HEADER_SIZE,     static_cast<uint32_t>(file_length));
+    Protocol::putU32(pkt + Protocol::HEADER_SIZE + 4, static_cast<uint32_t>(mtu));
+    memcpy(pkt + Protocol::HEADER_SIZE + 8, file_hash, 32);
+    Protocol::putU16(pkt + Protocol::HEADER_SIZE + 40, static_cast<uint16_t>(name.size()));
+    memcpy(pkt + Protocol::ANNOUNCE_FIXED, name.data(), name.size());
+    int announce_len = static_cast<int>(announce_packet.size());
 
     int announce_sent = 0;
     int send_errno = 0;
     for (int i = 0; i < 3; ++i) {
-        if (sendto(_socket, buffer, announce_len, 0,
+        if (sendto(_socket, pkt, announce_len, 0,
                    reinterpret_cast<sockaddr*>(&broadcast_address),
                    sizeof(broadcast_address)) < 0) {
             send_errno = errno;
@@ -214,6 +225,21 @@ bool sendAnnounce() {
         std::cout << "Ok: Sent information about new file with size " << file_length << std::endl;
     }
     return true;
+}
+
+// Best-effort re-broadcast of the stored ANNOUNCE. The initial burst leaves as
+// a sub-millisecond microburst, so a single loss window (cold NAT path, one
+// congested moment) used to strand every receiver: with no session latched it
+// silently discards all DATA and times out. Repeating the ANNOUNCE lets such a
+// receiver latch late and pull whatever it missed through the ordinary RESEND
+// path; a receiver already latched just refreshes its deadline.
+void resendAnnounce() {
+    if (announce_packet.empty()) return;
+    if (sendto(_socket, announce_packet.data(), static_cast<int>(announce_packet.size()), 0,
+               reinterpret_cast<sockaddr*>(&broadcast_address),
+               sizeof(broadcast_address)) < 0) {
+        std::cerr << "Warning: Failed to re-send ANNOUNCE" << std::endl;
+    }
 }
 
 // Absolute ceiling on the whole resend-serving phase, expressed as a multiple of
@@ -255,6 +281,11 @@ bool serveResends(size_t total_parts, size_t& resent) {
         // empty packets can't drain the resend phase early.
         if (result < 0) {
             ttl--;
+            // Keep repeating the ANNOUNCE alongside FINISH for as long as the
+            // sender lingers: a receiver that lost every earlier copy (or was
+            // started late) can still latch here and pull the whole file
+            // through RESENDs.
+            resendAnnounce();
             sendFinish();
             continue;
         }
@@ -308,9 +339,10 @@ bool serveResends(size_t total_parts, size_t& resent) {
             // ignoring the sender's chosen rate on a shared LAN.
             pace();
         }
-        // Re-announce completion at most once a second.
+        // Re-announce the session and completion at most once a second.
         if (duration - lastFinishSendTime >= 1) {
             lastFinishSendTime = duration;
+            resendAnnounce();
             sendFinish();
         }
     }
@@ -373,7 +405,23 @@ int run() {
     size_t total_parts = Protocol::totalParts(file_length, static_cast<size_t>(mtu));
     size_t delivered_parts = 0;
     int send_errno = 0;
+
+    // Repeat the ANNOUNCE a few times across the first second of DATA, so one
+    // lost initial burst no longer strands every receiver for the whole stream.
+    // A receiver that latches from a repeat recovers the parts it already
+    // missed via RESEND after FINISH.
+    constexpr std::chrono::milliseconds announce_repeat_at[] = {200ms, 500ms, 1000ms};
+    constexpr size_t announce_repeats = sizeof(announce_repeat_at) / sizeof(announce_repeat_at[0]);
+    size_t announces_repeated = 0;
+    const auto stream_start = std::chrono::steady_clock::now();
+
     for (size_t part_index = 0; part_index < total_parts; ++part_index) {
+        if (announces_repeated < announce_repeats &&
+            std::chrono::steady_clock::now() - stream_start >=
+                announce_repeat_at[announces_repeated]) {
+            resendAnnounce();
+            ++announces_repeated;
+        }
         bool delivered = false;
         if (!sendPart(part_index, &delivered, &send_errno)) {
             reporter.finish();
@@ -404,6 +452,10 @@ int run() {
               << ") in " << Progress::humanDuration(secs)
               << " at " << Progress::humanRate(rate) << std::endl;
 
+    // One more ANNOUNCE right before FINISH: a short transfer can drain inside
+    // the repeat window above, leaving a stranded receiver nothing to latch
+    // until the resend phase starts re-broadcasting below.
+    resendAnnounce();
     sendFinish();
 
     size_t resent = 0;

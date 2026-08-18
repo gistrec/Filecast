@@ -188,8 +188,22 @@ if(BUILD_TESTING)
                 ENVIRONMENT "BINARY=$<TARGET_FILE:filecast>;PYTHON=${Python3_EXECUTABLE}"
                 TIMEOUT 120
             )
+
+            # Lost-ANNOUNCE variant (issue #42): a Python UDP proxy swallows the
+            # sender's whole initial ANNOUNCE burst while letting every DATA
+            # packet through. The receiver must warn about un-announced DATA,
+            # latch from a later re-broadcast, and recover the missed parts via
+            # RESEND — pinning the announce-repeat hardening. Needs Python 3.
+            add_test(
+                NAME e2e_lostannounce
+                COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e_lostannounce.sh
+            )
+            set_tests_properties(e2e_lostannounce PROPERTIES
+                ENVIRONMENT "BINARY=$<TARGET_FILE:filecast>;PYTHON=${Python3_EXECUTABLE}"
+                TIMEOUT 120
+            )
         else()
-            message(STATUS "Python 3 not found — skipping e2e_lossy, e2e_corrupt, e2e_hijack, e2e_flood and e2e_prelatch tests")
+            message(STATUS "Python 3 not found — skipping e2e_lossy, e2e_corrupt, e2e_hijack, e2e_flood, e2e_prelatch and e2e_lostannounce tests")
         endif()
     endif()
 endif()
